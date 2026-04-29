@@ -1,0 +1,92 @@
+name: دانلود تورنت با aria2 (سریع)
+
+on:
+  workflow_dispatch:
+    inputs:
+      torrent_url:
+        description: 'لینک فایل تورنت یا مگنت لینک'
+        required: true
+        type: string
+      zip_password:
+        description: 'رمز عبور برای فایل ZIP'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download-torrent-fast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: دریافت کد مخزن
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: نصب ابزارهای مورد نیاز
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full aria2
+
+      - name: دانلود تورنت با aria2
+        run: |
+          # دانلود با aria2 (پشتیبانی از مگنت و تورنت)
+          if [[ "${{ github.event.inputs.torrent_url }}" == magnet:* ]]; then
+            echo "در حال دانلود از مگنت لینک با aria2..."
+            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 \
+                   --min-split-size=1M --console-log-level=error \
+                   --download-result=full "${{ github.event.inputs.torrent_url }}"
+          else
+            echo "در حال دانلود فایل تورنت با aria2..."
+            curl -L -o temp.torrent "${{ github.event.inputs.torrent_url }}"
+            aria2c --seed-time=0 --max-connection-per-server=16 --split=16 \
+                   --min-split-size=1M --console-log-level=error \
+                   --download-result=full temp.torrent
+          fi
+          
+          # ایجاد پوشه برای فایل‌های دانلود شده
+          mkdir -p downloaded_files
+          
+          # انتقال فایل‌های دانلود شده به پوشه مشخص
+          find . -maxdepth 1 -type f ! -name "*.torrent" ! -name "*.7z" ! -name "*.yml" -exec mv {} downloaded_files/ \;
+          find . -maxdepth 1 -type d -name "[!.]*" -exec mv {} downloaded_files/ \;
+          
+          echo "فایل‌های دانلود شده:"
+          ls -la downloaded_files/
+
+      - name: فشرده‌سازی رمزدار
+        run: |
+          7z a -p"${{ github.event.inputs.zip_password }}" -mhe=on -mx=3 -v95m "archive.7z" downloaded_files/
+
+      - name: پاکسازی فایل‌های موقت
+        run: |
+          rm -rf downloaded_files
+          rm -f *.torrent
+
+      - name: Commit و Push تکه‌ها
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # اضافه کردن تمام فایل‌های آرشیو
+          git add archive.7z* 2>/dev/null || true
+          
+          if git diff --staged --quiet; then
+            echo "هیچ فایلی برای commit وجود ندارد"
+            exit 1
+          fi
+          
+          git commit -m "Add torrent download archive with password protection"
+          
+          # تلاش برای push با retry
+          for attempt in {1..5}; do
+            if git push; then
+              echo "Push موفقیت‌آمیز بود"
+              break
+            else
+              echo "Push failed (attempt $attempt), retrying in 15 seconds..."
+              sleep 15
+            fi
+          done
